@@ -4,6 +4,7 @@ Load resumes via DirectoryLoader + PyPDFLoader, chunk with RecursiveCharacterTex
 extract metadata per file, store in Chroma via LangChain.
 """
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
+from corpus_tools import corpus_relative_path, resolve_corpus_root
 from embedding_utils import CHROMA_COLLECTION_NAME, CHROMA_PERSIST_DIR, require_openai_key
 
 logger = logging.getLogger(__name__)
@@ -147,39 +149,75 @@ def run_resume_rag(
         full_text = "\n".join(d.page_content for d in docs)
         file_metadata[source] = extract_metadata(full_text)
 
+    corpus_root = resolve_corpus_root(resumes_dir)
     splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=50)
     chunks = splitter.split_documents(documents)
     logger.info("Created %d chunks. Embedding and storing in Chroma ...", len(chunks))
 
-    for chunk in chunks:
+    chunk_ids: list[str] = []
+    sources_indexed: set[str] = set()
+    for idx, chunk in enumerate(chunks):
         source = chunk.metadata.get("source", "")
+        rel = corpus_relative_path(source, corpus_root) if source else source
+        sources_indexed.add(rel)
         if source in file_metadata:
             m = file_metadata[source]
-            chunk.metadata["path"] = source
+            chunk.metadata["path"] = rel
             chunk.metadata["name"] = m.name
             chunk.metadata["skills"] = ",".join(m.skills) if m.skills else ""
             chunk.metadata["experience_years"] = (
                 m.experience_years if m.experience_years is not None else -1
             )
             chunk.metadata["education"] = m.education or ""
+        digest = hashlib.sha256(f"{rel}:{idx}:{chunk.page_content[:120]}".encode()).hexdigest()[:16]
+        chunk_id = f"{rel}#chunk-{digest}"
+        chunk.metadata["chunk_id"] = chunk_id
+        chunk_ids.append(chunk_id)
 
     embedding = OpenAIEmbeddings(model="text-embedding-3-small")
-    Chroma.from_documents(
-        chunks,
-        embedding,
-        persist_directory=vector_db_path,
-        collection_name=CHROMA_COLLECTION_NAME,
-    )
+    persist_path = Path(vector_db_path)
+    if persist_path.exists() and list(persist_path.iterdir()):
+        store = Chroma(
+            persist_directory=vector_db_path,
+            embedding_function=embedding,
+            collection_name=CHROMA_COLLECTION_NAME,
+        )
+        collection = store._collection
+        existing = collection.get(include=["metadatas"])
+        stale_ids: list[str] = []
+        for doc_id, meta in zip(existing.get("ids", []), existing.get("metadatas", [])):
+            path = (meta or {}).get("path") or ""
+            if path in sources_indexed:
+                stale_ids.append(doc_id)
+        if stale_ids:
+            collection.delete(ids=stale_ids)
+            logger.info("Removed %d stale chunks for re-indexed sources.", len(stale_ids))
+        store.add_documents(chunks, ids=chunk_ids)
+    else:
+        Chroma.from_documents(
+            chunks,
+            embedding,
+            persist_directory=vector_db_path,
+            collection_name=CHROMA_COLLECTION_NAME,
+            ids=chunk_ids,
+        )
+
+    success_profiles = len(file_metadata)
     logger.info(
-        "Done. Stored %d chunks in %s. You can now run: python job_matcher.py \"your job description\"",
+        "Done. Discovered %d PDF(s), indexed %d chunks (%d sources). "
+        "You can now run: python job_matcher.py \"your job description\"",
+        n_files,
         len(chunks),
-        vector_db_path,
+        len(sources_indexed),
     )
+    logger.info("Successful metadata profiles: %d", success_profiles)
 
 
 if __name__ == "__main__":
     import sys
-    resumes_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Resume")
+    from embedding_utils import PROJECT_ROOT
+
+    resumes_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else PROJECT_ROOT / "Resume"
     try:
         run_resume_rag(resumes_dir)
     except (FileNotFoundError, NotADirectoryError, ValueError) as e:
