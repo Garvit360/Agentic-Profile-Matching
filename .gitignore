@@ -12,3 +12,4 @@ build/
 
 # Unpacked resume PDFs (track Resume.zip instead)
 Resume/
+__MACOSX/

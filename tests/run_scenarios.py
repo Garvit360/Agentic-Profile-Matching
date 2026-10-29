@@ -1,4 +1,4 @@
-from matching_agent import build_graph, AgentState
+from matching_agent import AgentState, build_graph, invoke_with_node_trace
 
 SCENARIOS = [
     "Find me candidates with React and 3+ years experience.",
@@ -14,9 +14,7 @@ def main() -> None:
     state = AgentState()
     for msg in SCENARIOS:
         print("\nYou:", msg)
-        state = AgentState.model_validate(
-            graph.invoke({**state.model_dump(), "last_user_message": msg})
-        )
+        state = invoke_with_node_trace(graph, state, msg)
         print("\nAgent:\n", state.last_response)
 
 
