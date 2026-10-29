@@ -1,56 +1,83 @@
-# Agentic Profile Match (LangGraph)
+# Agentic Profile Matching (LangGraph)
 
-LangGraph-based matching agent that ranks resumes against a job description, supports iterative refinement, and explains its decisions via a CLI.
+LangGraph-based matching agent that ranks resumes against structured requirements, supports iterative refinement, comparison, explanations, and interview questions via a CLI.
 
-## Quick Start
+## Requirements
 
-### 1. Install dependencies
+- Python 3.12 (recommended)
+- OpenAI API key for indexing, search, and analysis
+
+## Setup
 
 ```bash
-cd "/Users/garvit/Airtribe Assignment/Agentic Profile Mtaching"
+cd Agentic_Profile_Matching
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # add OPENAI_API_KEY
 ```
 
-### 2. Set your OpenAI API key
+## Index resumes
 
 ```bash
-export OPENAI_API_KEY="your-key-here"
+unzip -q Resume.zip -d .
+python resume_rag.py Resume
 ```
 
-### 3. Index resumes (RAG)
+Re-running indexing uses deterministic chunk IDs for the same sources to avoid unbounded duplicate growth.
 
-Unzip the bundled dataset and index locally:
-
-```bash
-unzip Resume.zip
-
-# Uses local Resume/ by default
-python resume_rag.py
-```
-
-### 4. Run the matching agent
+## Run the agent
 
 ```bash
 python matching_agent.py
 ```
 
-Example prompts:
+Single-shot:
+
+```bash
+python matching_agent.py "Find me candidates with React and 3+ years experience"
+```
+
+## Tests (offline, no API key)
+
+```bash
+pytest tests/test_agent.py -q
+```
+
+Live corpus smoke (optional, requires indexed `chroma_db` and API key):
+
+```bash
+pytest tests/test_agent.py -q -m live
+```
+
+## Example prompts
+
 - `Find me candidates with React and 3+ years experience`
+- `Actually require 5+ years and AWS`
 - `Compare top 3`
-- `Why did John rank higher than Jane?`
-- `Generate interview questions for <candidate name>`
+- `Why did Alice Smith rank higher than Jane Doe?`
+- `Generate interview questions for the top candidate`
+- `Show details for top 1`
+- `List corpus files`
+- `Show previous results`
 
-## State Machine Diagram
+## Architecture
 
-See `docs/state_machine.mmd` for the Mermaid diagram.
+See `docs/state_machine.mmd` (Mermaid). Export to SVG/PNG with:
 
-## Tests / Scenarios
+```bash
+npx -y @mermaid-js/mermaid-cli -i docs/state_machine.mmd -o docs/state_machine.svg
+```
 
-Conversation flows are documented in `tests/conversation_flows.md`.
+## Limitations
 
-## Notes
+- Screening scores are heuristic (60% retrieval / 40% deep fit); not calibrated hiring probabilities.
+- Missing skill evidence yields **pending review**, not confirmed absence.
+- OCR for scanned PDFs is out of scope.
+- Milestone 1 tool parity is not claimed; this repo exposes read-only corpus listing, filename search, and resume reading.
 
-- The agent uses `gpt-4o-mini` by default for extraction and analysis.
-- The RAG pipeline uses Chroma + OpenAI embeddings as in the earlier milestone.
+## Recovery
+
+- **Missing vector DB:** run `python resume_rag.py Resume`
+- **Stale results in session:** run a fresh search; failed requests keep the last successful snapshot (`show previous results`)
+- **API errors:** check `.env` and retry; incomplete deep analysis receives no final hire decision
