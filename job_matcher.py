@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
-from domain_models import RequirementSet, stable_candidate_id
+from domain_models import RequirementSet, stable_candidate_id, CandidateProfile
 from eligibility import assess_eligibility
 from embedding_utils import CHROMA_COLLECTION_NAME, CHROMA_PERSIST_DIR, require_openai_key
 
@@ -65,7 +65,7 @@ def _semantic_search_all_chunks(
         embedding_function=embedding,
         collection_name=CHROMA_COLLECTION_NAME,
     )
-    hits = vector_store.similarity_search_with_score(query, k=fetch_k)
+    hits = vector_store.similarity_search_with_score(query, k=vector_store._collection.count())
     return [
         {
             "document": doc.page_content,
@@ -141,10 +141,8 @@ def run_job_matcher(
     from requirements_engine import RequirementSpecPayload, merge_initial_jd_requirements
 
     if requirements is None:
-        requirements = merge_initial_jd_requirements(
-            job_description,
-            RequirementSpecPayload(),
-        )
+        from agent_tools import extract_requirements, requirements_from_jd
+        requirements = requirements_from_jd(job_description, extract_requirements(job_description))
 
     query = _requirements_query(requirements, job_description)
     fetch_k = max(k * fetch_multiplier, 200)
@@ -163,7 +161,22 @@ def run_job_matcher(
         meta = (chunk_list[0].get("metadata")) or {}
         rel_path = path
         cid = stable_candidate_id(rel_path.replace("\\", "/"))
+        profile = CandidateProfile.model_validate_json(meta["profile"])
+        skill_facts = [f for f in profile.facts if f.kind == "skill"]
+        experience_facts = [f for f in profile.facts if f.kind == "experience"]
+        years = {int(f.claim) for f in experience_facts}
+        meta = {**meta, "skills": ",".join(f.claim for f in skill_facts),
+                "experience_years": next(iter(years)) if len(years) == 1 else None}
         eligibility, assessments = assess_eligibility(meta, requirements)
+        criteria = {c.id: c.label.casefold() for c in requirements.must_have}
+        for assessment in assessments:
+            if assessment.criterion_id == "experience-minimum":
+                evidence = experience_facts if len(years) == 1 else []
+            else:
+                evidence = [f for f in skill_facts if f.claim.casefold() == criteria[assessment.criterion_id]]
+            if evidence:
+                assessment.evidence_excerpt = evidence[0].excerpt
+                assessment.page_ref = evidence[0].page
         best_dist = min(c.get("distance", 2.0) for c in chunk_list)
         score, reasoning, matched_skills, excerpts = score_match(requirements, meta, chunk_list, best_dist)
         result = JobMatchResult(

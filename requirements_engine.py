@@ -52,7 +52,7 @@ def apply_refinement(current: RequirementSet, message: str) -> RefinementResult:
     updated = current.model_copy(deep=True)
     changed = False
 
-    years_match = re.search(r"(\d+)\s*\+\s*years?", msg, re.I)
+    years_match = re.search(r"(\d+)\s*\+?\s*years?", msg, re.I)
     if years_match and any(k in msg for k in ("require", "years", "experience", "actually")):
         updated.minimum_experience_years = int(years_match.group(1))
         changed = True
@@ -69,16 +69,13 @@ def apply_refinement(current: RequirementSet, message: str) -> RefinementResult:
         updated = _remove_criterion(updated, label)
         changed = True
 
-    add_must = re.findall(r"(?:require|add)\s+(\w[\w\s/+.-]{1,40}?)(?:\.|,|$|\s+and\s+)", msg, re.I)
-    for label in add_must:
-        cleaned = label.strip()
-        if cleaned and not re.fullmatch(r"\d+\+?\s*years?", cleaned, re.I):
-            updated = _add_must_have(updated, cleaned)
-            changed = True
-
-    if re.search(r"\baws\b", msg) and any(k in msg for k in ("require", "must", "add")):
-        updated = _add_must_have(updated, "AWS")
-        changed = True
+    add_match = re.search(r"(?:require|add)\s+(.+)", msg)
+    if add_match:
+        for label in re.split(r"\s+and\s+|,", add_match.group(1).rstrip(".")):
+            label = label.strip()
+            if not re.fullmatch(r"\d+\+?\s*years?(?:\s+experience)?", label):
+                updated = _add_must_have(updated, label)
+                changed = True
 
     if not changed and any(k in msg for k in ("actually", "refine", "update", "change")):
         if years_match or "aws" in msg or "optional" in msg or "remove" in msg:
@@ -94,13 +91,13 @@ def apply_refinement(current: RequirementSet, message: str) -> RefinementResult:
             )
 
     if not changed:
-        return RefinementResult(requirements=current, applied=False, clarification=None)
+        return RefinementResult(requirements=current, applied=False, clarification="Please specify the requirement to add, remove, or change.")
 
     return RefinementResult(requirements=updated, applied=True, clarification=None)
 
 
 def _parse_years_from_text(text: str) -> Optional[int]:
-    m = re.search(r"(\d+)\s*\+\s*years?", text, re.I)
+    m = re.search(r"(\d+)\s*\+?\s*years?", text, re.I)
     return int(m.group(1)) if m else None
 
 

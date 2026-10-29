@@ -5,6 +5,7 @@ extract metadata per file, store in Chroma via LangChain.
 """
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -144,9 +145,18 @@ def run_resume_rag(
     for doc in documents:
         source = doc.metadata.get("source", "unknown")
         by_source.setdefault(source, []).append(doc)
+    from profile_extraction import extract_profile
+    from domain_models import ExtractionStatus
+    corpus_root = resolve_corpus_root(resumes_dir)
+    profiles = {}
     file_metadata: dict[str, ResumeMetadata] = {}
     for source, docs in by_source.items():
         full_text = "\n".join(d.page_content for d in docs)
+        rel = corpus_relative_path(source, corpus_root)
+        profile = extract_profile(rel, corpus_root)
+        if profile.extraction_status != ExtractionStatus.SUCCESS:
+            raise ValueError(f"Cannot index {rel}: {profile.failure_reason}")
+        profiles[source] = profile
         file_metadata[source] = extract_metadata(full_text)
 
     corpus_root = resolve_corpus_root(resumes_dir)
@@ -162,6 +172,7 @@ def run_resume_rag(
         sources_indexed.add(rel)
         if source in file_metadata:
             m = file_metadata[source]
+            chunk.metadata["profile"] = profiles[source].model_dump_json()
             chunk.metadata["path"] = rel
             chunk.metadata["name"] = m.name
             chunk.metadata["skills"] = ",".join(m.skills) if m.skills else ""
@@ -187,12 +198,12 @@ def run_resume_rag(
         stale_ids: list[str] = []
         for doc_id, meta in zip(existing.get("ids", []), existing.get("metadatas", [])):
             path = (meta or {}).get("path") or ""
-            if path in sources_indexed:
+            if doc_id not in set(chunk_ids):
                 stale_ids.append(doc_id)
+        store.add_documents(chunks, ids=chunk_ids)
         if stale_ids:
             collection.delete(ids=stale_ids)
             logger.info("Removed %d stale chunks for re-indexed sources.", len(stale_ids))
-        store.add_documents(chunks, ids=chunk_ids)
     else:
         Chroma.from_documents(
             chunks,

@@ -6,7 +6,7 @@ import hashlib
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,7 @@ class ExtractionStatus(str, Enum):
 
 
 class CandidateFact(BaseModel):
+    kind: Literal["skill", "experience", "other"]
     claim: str
     excerpt: str
     page: int = Field(..., ge=1)

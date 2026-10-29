@@ -95,7 +95,7 @@ def infer_intent(user_msg: str, has_jd: bool) -> str:
     ):
         return "details"
 
-    if any(k in msg for k in ["actually", "refine", "update", "change", "require "]):
+    if any(k in msg for k in ["actually", "refine", "update", "change", "require ", "remove ", "add ", " is optional"]):
         return "refine" if has_jd else "search"
     if any(k in msg for k in ["find", "search", "candidates", "match", "looking for"]):
         return "search"
@@ -332,6 +332,7 @@ def _shortlist_item_from_pool(
     jd: str,
     requirements: RequirementSet,
 ) -> CandidateShortlistItem:
+    jd = "\n".join(format_requirements(requirements))
     analysis = analyze_candidate_fit(jd, candidate)
     match_score = int(candidate.get("match_score", 0))
     combined = combined_score(match_score, analysis.fit_score)
@@ -424,12 +425,6 @@ def parse_input_node(state: dict) -> dict:
         updates["pending_pool"] = []
         updates["shortlist"] = []
         updates["pending_review"] = []
-    elif intent == "refine":
-        if st.requirements:
-            updates["candidate_pool"] = []
-            updates["pending_pool"] = []
-            updates["shortlist"] = []
-            updates["pending_review"] = []
 
     return updates
 
@@ -459,7 +454,8 @@ def extract_requirements_node(state: dict) -> dict:
     else:
         requirements = requirements_from_jd(st.job_description, spec)
 
-    return {"requirements": requirements, "requirements_spec": spec}
+    return {"requirements": requirements, "requirements_spec": spec,
+            "candidate_pool": [], "pending_pool": [], "shortlist": [], "pending_review": []}
 
 
 def search_resumes_node(state: dict) -> dict:
@@ -516,6 +512,7 @@ def generate_report_node(state: dict) -> dict:
         return {
             "last_response": "No candidates matched the current requirements.",
             "request_status": RequestStatus.SUCCEEDED,
+            "previous_snapshot": st.last_successful_snapshot,
             "last_successful_snapshot": ResultSnapshot(
                 requirements=st.requirements,
                 shortlist=[],
@@ -763,7 +760,9 @@ def read_resume_node(state: dict) -> dict:
 
 def previous_results_node(state: dict) -> dict:
     st = AgentState.model_validate(state)
-    snap = st.last_successful_snapshot
+    snap = st.last_successful_snapshot if st.request_status == RequestStatus.FAILED else st.previous_snapshot
+    if snap is None:
+        snap = st.last_successful_snapshot
     if not snap or (not snap.shortlist and not snap.pending_review):
         return {"last_response": "No previous successful results are stored in this session."}
     lines = ["Previous successful results:"]

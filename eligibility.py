@@ -58,7 +58,7 @@ def assess_eligibility(
         label = crit.label.lower()
         if not label:
             continue
-        if any(label in ms or ms in label for ms in meta_skills):
+        if label in meta_skills:
             assessments.append(
                 CriterionAssessment(criterion_id=crit.id, status=AssessmentStatus.MET, evidence_excerpt=crit.label)
             )
@@ -68,20 +68,11 @@ def assess_eligibility(
             )
             has_unknown = True
         else:
-            matched = any(label.split()[0] in ms for ms in meta_skills if label.split())
-            if matched:
-                assessments.append(
-                    CriterionAssessment(criterion_id=crit.id, status=AssessmentStatus.MET, evidence_excerpt=crit.label)
-                )
-            else:
-                assessments.append(
-                    CriterionAssessment(
-                        criterion_id=crit.id,
-                        status=AssessmentStatus.UNKNOWN,
-                        evidence_excerpt="No verified skill mention in indexed metadata",
-                    )
-                )
-                has_unknown = True
+            assessments.append(CriterionAssessment(
+                criterion_id=crit.id, status=AssessmentStatus.UNKNOWN,
+                evidence_excerpt="No verified skill mention in indexed metadata",
+            ))
+            has_unknown = True
 
     if has_not_met:
         return EligibilityStatus.INELIGIBLE, assessments

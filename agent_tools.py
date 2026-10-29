@@ -153,9 +153,11 @@ def search_resumes(requirements: RequirementSet, jd: str, k: int = 10) -> Search
 
 def analyze_candidate_fit(jd: str, candidate: dict, retry: bool = True) -> CandidateAnalysis:
     llm = _get_llm()
-    excerpts = candidate.get("relevant_excerpts", [])
+    from corpus_tools import read_resume_pdf
+    document = read_resume_pdf(candidate["resume_path"])
+    excerpts = [f"Page {p.page_number}: {p.text}" for p in document.pages]
     evidence = "\n".join(
-        f"- {format_excerpt_for_display(e, max_len=500)}" for e in excerpts[:8]
+        e for e in excerpts
     )
     system = (
         "You are a hiring assistant. Analyze candidate fit for the job description using ONLY provided evidence. "

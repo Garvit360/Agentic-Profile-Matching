@@ -45,13 +45,7 @@ def resolve_corpus_root(configured: str | Path | None = None) -> Path:
 def _is_safe_path(path: Path, corpus_root: Path) -> bool:
     resolved = path.resolve()
     root = corpus_root.resolve()
-    if not str(resolved).startswith(str(root)):
-        return False
-    if resolved.is_symlink():
-        target = resolved.resolve()
-        if not str(target).startswith(str(root)):
-            return False
-    return True
+    return resolved.is_relative_to(root)
 
 
 def list_corpus_files(corpus_root: Path | None = None) -> list[CorpusFileInfo]:

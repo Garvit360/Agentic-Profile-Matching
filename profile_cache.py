@@ -5,19 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from domain_models import CandidateProfile, ExtractionStatus
+from domain_models import CandidateProfile
 
-EXTRACTION_SCHEMA_VERSION = "1"
-EXTRACTION_PROMPT_VERSION = "1"
 CACHE_DIR = Path(".profile_cache")
 
 
 class CacheEntry(BaseModel):
     content_hash: str
-    extraction_schema_version: str
-    prompt_version: str
     model: str
     profile: CandidateProfile
 
@@ -39,10 +35,6 @@ def load_cached_profile(
     entry = CacheEntry.model_validate(raw)
     if entry.content_hash != content_hash:
         return None
-    if entry.extraction_schema_version != EXTRACTION_SCHEMA_VERSION:
-        return None
-    if entry.prompt_version != EXTRACTION_PROMPT_VERSION:
-        return None
     if entry.model != model:
         return None
     return entry.profile
@@ -57,8 +49,6 @@ def save_cached_profile(
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry = CacheEntry(
         content_hash=content_hash,
-        extraction_schema_version=EXTRACTION_SCHEMA_VERSION,
-        prompt_version=EXTRACTION_PROMPT_VERSION,
         model=model,
         profile=profile,
     )
