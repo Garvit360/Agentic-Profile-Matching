@@ -35,56 +35,6 @@ from requirements_engine import apply_refinement
 # =============================================================================
 
 
-@pytest.fixture
-def mock_pipeline(sample_requirements: RequirementSet):
-    spec = RequirementSpec(
-        must_have=sample_requirements.must_have_labels(),
-        nice_to_have=sample_requirements.nice_to_have_labels(),
-        years_experience=sample_requirements.minimum_experience_years,
-        role_context=sample_requirements.role_context,
-    )
-
-    def fake_extract(jd: str) -> RequirementSpec:
-        return spec
-
-    eligible = [
-        {
-            "candidate_id": "alice-1",
-            "candidate_name": "Alice",
-            "resume_path": "Resume/a.pdf",
-            "match_score": 90,
-            "matched_skills": ["React"],
-            "relevant_excerpts": ["Built React apps for 4 years"],
-            "reasoning": "Strong match",
-            "eligibility": "eligible",
-            "criterion_assessments": [],
-        }
-    ]
-
-    def fake_search(requirements: RequirementSet, jd: str, k: int = 10) -> SearchResultBundle:
-        if "NO_MATCH" in jd:
-            return SearchResultBundle(eligible=[], pending_review=[])
-        return SearchResultBundle(eligible=eligible, pending_review=[])
-
-    def fake_analyze(jd: str, candidate: dict, retry: bool = True):
-        from agent_tools import CandidateAnalysis
-        from domain_models import AnalysisStatus
-
-        return CandidateAnalysis(
-            summary="Strong frontend fit",
-            strengths=["React"],
-            gaps=[],
-            fit_score=85,
-            analysis_status=AnalysisStatus.COMPLETE,
-        )
-
-    with (
-        patch("matching_agent.extract_requirements", side_effect=fake_extract),
-        patch("matching_agent.search_resumes", side_effect=fake_search),
-        patch("matching_agent.analyze_candidate_fit", side_effect=fake_analyze),
-        patch("matching_agent.requirements_from_jd", return_value=sample_requirements),
-    ):
-        yield
 
 
 # =============================================================================
