@@ -53,13 +53,84 @@ def test_analysis_receives_effective_requirements(monkeypatch):
     assert 'Python' in captured[0] and '5+ years' in captured[0]
     assert 'Original' not in captured[0]
 
-def test_invalid_page_citation_fails(monkeypatch, tmp_path):
+def _extract_with_fake_model(monkeypatch, tmp_path, page_text, facts):
     import profile_extraction as extraction
     from types import SimpleNamespace
+    model = SimpleNamespace(invoke=lambda _: extraction.ExtractionPayload.model_validate({'facts': facts}))
+    model.with_structured_output = lambda *a, **k: model
     monkeypatch.setattr(extraction, 'require_openai_key', lambda: None)
-    monkeypatch.setattr(extraction, '_page_labelled_text', lambda *args: ('[Page 1] Python', [(1, 'Python')]))
+    monkeypatch.setattr(extraction, '_page_labelled_text', lambda *args: ('combined', list(page_text.items())))
     monkeypatch.setattr(extraction, 'load_cached_profile', lambda *args: None)
-    model = SimpleNamespace(invoke=lambda _: SimpleNamespace(content='{"facts":[{"kind":"skill","claim":"Python","excerpt":"Python","page":99}]}'))
+    monkeypatch.setattr(extraction, 'save_cached_profile', lambda *args: None)
     monkeypatch.setattr(extraction, 'ChatOpenAI', lambda **kwargs: model)
-    with pytest.raises(ValueError, match='Invalid evidence citation'):
-        extraction.extract_profile('a.pdf', tmp_path)
+    return extraction.extract_profile('a.pdf', tmp_path)
+
+def test_invalid_page_citation_fails(monkeypatch, tmp_path):
+    profile = _extract_with_fake_model(monkeypatch, tmp_path, {1: 'Python'},
+        [{'kind':'skill','claim':'Java','excerpt':'Java','page':99}])
+    assert profile.extraction_status.value == 'failed'
+    assert profile.facts == []
+
+def test_unsupported_facts_are_dropped_supported_facts_kept(monkeypatch, tmp_path):
+    page_text = {
+        1: 'Skilled professional with \n20\n \nyears in security.\nFirst Aid training (\n 2016\n )',
+        2: 'Core competencies include\nSkills\nMaintenance, Corrective Maintenance, Documentation',
+    }
+    profile = _extract_with_fake_model(monkeypatch, tmp_path, page_text, [
+        {'kind':'skill','claim':'First Aid training','excerpt':'First Aid training (2016)','page':1},
+        {'kind':'experience','years':20,'excerpt':'Skilled professional with 20 years','page':1},
+        {'kind':'skill','claim':'Documentation','excerpt':'Core competencies include Maintenance, Corrective Maintenance, Documentation','page':1},
+        {'kind':'experience','years':25,'excerpt':'Skilled professional with 20 years','page':1},
+        {'kind':'skill','claim':'React','excerpt':'First Aid training (2016)','page':1},
+        {'kind':'skill','claim':'Welding','excerpt':'Core competencies include Welding','page':2},
+    ])
+    assert profile.extraction_status.value == 'success'
+    assert [(f.page, f.excerpt) for f in profile.facts] == [
+        (1, 'First Aid training (2016)'),
+        (1, 'Skilled professional with 20 years'),
+        (2, 'Maintenance, Corrective Maintenance, Documentation'),
+    ]
+
+def test_excerpt_check_ignores_pdf_whitespace_but_not_wording():
+    from domain_models import excerpt_in_source, term_in_excerpt
+    source = 'First Aid training (\n 2016\n )\nÂ Weapons training'
+    assert excerpt_in_source('First Aid training (2016)', source)
+    assert excerpt_in_source('Weapons training', source)
+    assert not excerpt_in_source('First Aid trainings (2016)', source)
+    assert not excerpt_in_source('React', 'Reactive maintenance')
+    assert excerpt_in_source('C/C++', 'Languages: \nC/\nC++, Verilog')
+    assert term_in_excerpt('C', 'Languages: C, Python')
+    assert not term_in_excerpt('Java', 'JavaScript')
+
+@pytest.mark.parametrize('years', [20, 1, 24, 8])
+def test_experience_has_numeric_years(years):
+    from profile_extraction import ExtractionPayload
+    payload = ExtractionPayload.model_validate({'facts':[{'kind':'experience','years':years,'excerpt':f'{years} years total professional experience','page':1}]})
+    assert payload.facts[0].years == years
+
+@pytest.mark.parametrize('fact', [
+    {'kind':'skill','claim':20,'excerpt':'20','page':1},
+    {'kind':'experience','years':'20','excerpt':'20','page':1},
+    {'kind':'experience','years':-1,'excerpt':'-1','page':1},
+])
+def test_invalid_fact_types_are_rejected(fact):
+    from profile_extraction import ExtractionPayload
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ExtractionPayload.model_validate({'facts':[fact]})
+
+
+def test_native_chroma_reads_persisted_profile(tmp_path, monkeypatch):
+    import chromadb
+    import job_matcher
+    from domain_models import CandidateProfile, CandidateFact, ExtractionStatus
+    from embedding_utils import CHROMA_COLLECTION_NAME
+    from types import SimpleNamespace
+    profile = CandidateProfile(candidate_id='a',source_path='a.pdf',content_hash='abc',facts=[CandidateFact(kind='skill',claim='React',excerpt='React',page=1)],extraction_status=ExtractionStatus.SUCCESS)
+    client = chromadb.PersistentClient(path=str(tmp_path))
+    collection = client.get_or_create_collection(CHROMA_COLLECTION_NAME)
+    collection.upsert(ids=['a'],embeddings=[[1.0,0.0]],documents=['React'],metadatas=[{'path':'a.pdf','profile':profile.model_dump_json()}])
+    monkeypatch.setattr(job_matcher,'OpenAIEmbeddings',lambda **kwargs: SimpleNamespace(embed_query=lambda query:[1.0,0.0]))
+    rows = job_matcher._semantic_search_all_chunks('React',str(tmp_path),10)
+    assert rows[0]['metadata']['path'] == 'a.pdf'
+    assert rows[0]['document'] == 'React'

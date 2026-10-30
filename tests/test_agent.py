@@ -75,6 +75,14 @@ def test_stable_candidate_id_from_path() -> None:
 # =============================================================================
 
 
+def test_reactjs_satisfies_react_must_have() -> None:
+    req = requirement_set_from_spec(must_have=["React"], nice_to_have=[], years_experience=3)
+    meta = {"skills": "JavaScript,ReactJS,HTML", "experience_years": 4}
+    status, assessments = assess_eligibility(meta, req)
+    assert status.value == "eligible"
+    assert any(a.status.value == "met" and a.criterion_id.startswith("skill-") for a in assessments)
+
+
 def test_all_must_haves_required_not_any_skill() -> None:
     req = requirement_set_from_spec(
         must_have=["React", "AWS"],
