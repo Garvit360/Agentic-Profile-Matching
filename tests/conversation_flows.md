@@ -1,30 +1,38 @@
 # Conversation Flows
 
-Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan), **Status** (yellow), and **Agent** (blue). Use candidate names and ids from your corpus.
+Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan), **Status** (yellow), and **Agent** (blue). Copy candidate names and ids from the eligible list the CLI just printed.
+
+Record **Flows 1–6** in one fresh session, in this order. SQL with a stated total of 3 or more years is verified on enough resumes that the ranked list stays populated through the years change, so compare, ranking, details, and interview questions all have candidates to use.
+
+```bash
+python matching_agent.py
+```
+
+Flows 7–10 are extra checks. Leave them out of the recording.
 
 ---
 
-## Flow 1: Initial search (React + 3+ years)
+## Flow 1: Initial search (SQL + 3+ years)
 
-**User:** Find me candidates with React and 3+ years experience.
+**User:** Find me candidates with SQL and 3+ years experience.
 
 **Status:** Thinking… → Understanding… → Extracting requirements… → Searching resumes… → Reasoning… → Preparing results… → Done.
 
-**Agent:** Screening header with `Eligible ranked` / `Pending review` counts; effective requirements; ranked eligible list (ids, scores, recommendations); separate pending-review list with `needs evidence:`; follow-up hints.
+**Agent:** Screening header with `Eligible ranked` / `Pending review` counts; effective requirements (3+ years, SQL); numbered eligible list (ids, scores, recommendations); separate pending-review list with `needs evidence:`; follow-up hints.
 
-**Verify:** Search intent; 3+ years and React in effective requirements; pending rows not mixed into eligible ranking; stable ids; eligible sorted by `combined` descending.
+**Verify:** Search intent; 3+ years and SQL in effective requirements; eligible ranked is at least 3; pending rows are not numbered into the eligible ranking; stable ids; eligible sorted by `combined` descending.
 
 ---
 
-## Flow 2: Refinement (5+ years + AWS)
+## Flow 2: Refinement (5+ years)
 
-**User:** Actually require 5+ years and AWS.
+**User:** Actually require 5+ years.
 
 **Status:** Full search pipeline (refine → extract → search → rank → report).
 
-**Agent:** Updated effective requirements (5+ years, React, AWS); ranking-change section when a prior snapshot exists; eligible count may be 0 with pending-review still populated.
+**Agent:** Updated effective requirements (5+ years, SQL). Eligible ranked stays at least 3. Ranking-change section notes anyone dropped because their verified total is under 5.
 
-**Verify:** Refine intent; years replace 3→5; AWS added; stale eligible profiles dropped; see Flow 7 if eligible is empty.
+**Verify:** Refine intent; years replace 3→5; SQL remains a must-have; the numbered list is still long enough for Flow 3.
 
 ---
 
@@ -36,19 +44,19 @@ Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan
 
 **Agent:** Side-by-side comparison of three candidates from the **eligible shortlist** only.
 
-**Verify:** Needs non-empty eligible shortlist; pending-review candidates are not compared.
+**Verify:** The three names are the first three numbered rows from Flow 2. Pending-review candidates are not compared.
 
 ---
 
 ## Flow 4: Explain ranking (named pair)
 
-**User:** Why did \<name A\> rank higher than \<name B\>?
+**User:** Why did \<name on line 1\> rank higher than \<name on line 2\>?
 
 **Status:** Explaining ranking decisions… → Done.
 
 **Agent:** Score and evidence explanation for both names on the current shortlist.
 
-**Verify:** Real corpus names or ids; ambiguous/unknown names → clarification, no silent substitute.
+**Verify:** Use the two names just printed in the eligible list. An unknown name returns a clarification and does not substitute someone else.
 
 ---
 
@@ -58,9 +66,9 @@ Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan
 
 **Status:** Generating interview questions… → Done.
 
-**Agent:** 5–7 tailored screening questions.
+**Agent:** 5–7 tailored screening questions for the first eligible candidate.
 
-**Verify:** Resolves top candidate; unknown target → explicit error.
+**Verify:** Questions name that candidate. An unknown target returns an explicit error.
 
 ---
 
@@ -70,21 +78,21 @@ Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan
 
 **Status:** Collecting candidate details… → Done.
 
-**Agent:** Detailed report for one shortlisted candidate.
+**Agent:** Detailed report for the first eligible candidate (strengths, gaps, suggestions).
 
-**Verify:** Details intent, not search (e.g. “Find React candidates in Boston” stays search).
+**Verify:** Details intent, not a new search (e.g. “Find SQL candidates in Boston” stays a search).
 
 ---
 
-## Flow 7: Empty eligible shortlist
+## Flow 7: Empty eligible shortlist (do not record)
 
-**User:** (After Flow 2 with `Eligible ranked: 0`) Compare top 3.
+**User:** (In a separate session, after a search that has eligible candidates) Actually require AWS.
 
-**Status:** Comparing candidates… → Done.
+**Status:** Full search pipeline, then a later `Compare top 3` → Comparing candidates… → Done.
 
-**Agent:** Explains eligible ranked is 0; may mention pending review and suggest `compare previous top 3` if a prior search had eligible candidates.
+**Agent:** AWS is added and eligible ranked drops to 0, because that skill is not a verified quote on the retrieved resumes. `Compare top 3` explains that eligible ranked is 0 and that compare uses only the eligible list. `Compare previous top 3` uses the previous eligible snapshot.
 
-**Verify:** Must not show prior eligible rows as *current* results; `compare previous top 3` uses `previous_snapshot` when current shortlist is empty.
+**Verify:** Current results must not reprint the previous eligible rows. `compare previous top 3` reads `previous_snapshot` only when the current shortlist is empty.
 
 ---
 
@@ -105,7 +113,7 @@ Manual smoke script for `python matching_agent.py`. The CLI colors **You** (cyan
 **User:** List corpus.  
 **Agent:** Bounded corpus file list.
 
-**User:** Find file react developer.  
+**User:** Find file sql developer.  
 **Agent:** Filename matches.
 
 **User:** read resume \<corpus-relative-path.pdf\>  

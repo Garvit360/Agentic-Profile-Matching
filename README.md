@@ -41,7 +41,7 @@ python matching_agent.py "Find me candidates with React and 3+ years experience"
 ## Tests (offline, no API key)
 
 ```bash
-pytest tests/test_agent.py -q
+pytest -q
 ```
 
 Live corpus smoke (optional, requires indexed `chroma_db` and API key):
