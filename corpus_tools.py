@@ -78,7 +78,7 @@ def search_corpus_filenames(query: str, corpus_root: Path | None = None) -> list
 
 
 def read_resume_pdf(relative_path: str, corpus_root: Path | None = None) -> CorpusDocument:
-    from langchain_community.document_loaders import PyPDFLoader
+    from pypdf import PdfReader
 
     root = corpus_root or resolve_corpus_root()
     full_path = (root / relative_path).resolve()
@@ -86,10 +86,7 @@ def read_resume_pdf(relative_path: str, corpus_root: Path | None = None) -> Corp
         raise PermissionError(f"Path outside corpus: {relative_path}")
     if not full_path.exists():
         raise FileNotFoundError(f"Resume not found: {relative_path}")
-    loader = PyPDFLoader(str(full_path))
-    docs = loader.load()
-    pages = [
-        CorpusPage(page_number=idx + 1, text=doc.page_content or "")
-        for idx, doc in enumerate(docs)
-    ]
+    reader = PdfReader(full_path)
+    pages = [CorpusPage(page_number=idx + 1, text=page.extract_text())
+             for idx, page in enumerate(reader.pages)]
     return CorpusDocument(relative_path=relative_path, pages=pages)

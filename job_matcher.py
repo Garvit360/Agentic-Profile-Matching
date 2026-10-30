@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+import chromadb
 
 from domain_models import RequirementSet, stable_candidate_id, CandidateProfile
 from eligibility import assess_eligibility
@@ -42,6 +42,20 @@ class JobMatchOutput(BaseModel):
     pending_review: list[JobMatchResult] = Field(default_factory=list, description="Pending review matches")
 
 
+class IndexRebuildRequired(ValueError):
+    """The on-disk corpus does not contain the required screening evidence."""
+
+
+def validate_index_metadata(metadata: dict) -> None:
+    if "profile" not in metadata:
+        raise IndexRebuildRequired(
+            "This resume index predates structured candidate evidence. "
+            "Rebuild it with: python resume_rag.py Resume. "
+            "The rebuild requires OpenAI access; no profiles will be fabricated."
+        )
+    CandidateProfile.model_validate_json(metadata["profile"])
+
+
 def _semantic_search_all_chunks(
     query: str,
     persist_dir: str,
@@ -60,20 +74,16 @@ def _semantic_search_all_chunks(
         )
 
     embedding = OpenAIEmbeddings(model="text-embedding-3-small")
-    vector_store = Chroma(
-        persist_directory=persist_dir,
-        embedding_function=embedding,
-        collection_name=CHROMA_COLLECTION_NAME,
-    )
-    hits = vector_store.similarity_search_with_score(query, k=vector_store._collection.count())
-    return [
-        {
-            "document": doc.page_content,
-            "metadata": doc.metadata,
-            "distance": float(score),
-        }
-        for doc, score in hits
-    ]
+    collection = chromadb.PersistentClient(path=persist_dir).get_collection(CHROMA_COLLECTION_NAME)
+    for metadata in collection.get(include=["metadatas"])["metadatas"]:
+        validate_index_metadata(metadata)
+    count = collection.count()
+    if count == 0:
+        raise ValueError("Resume index is empty. Run python resume_rag.py Resume.")
+    hits = collection.query(query_embeddings=[embedding.embed_query(query)], n_results=count,
+                            include=["documents", "metadatas", "distances"])
+    return [{"document": document, "metadata": metadata, "distance": distance}
+            for document, metadata, distance in zip(hits["documents"][0], hits["metadatas"][0], hits["distances"][0])]
 
 
 def _requirements_query(requirements: RequirementSet, job_description: str) -> str:
@@ -161,10 +171,11 @@ def run_job_matcher(
         meta = (chunk_list[0].get("metadata")) or {}
         rel_path = path
         cid = stable_candidate_id(rel_path.replace("\\", "/"))
+        validate_index_metadata(meta)
         profile = CandidateProfile.model_validate_json(meta["profile"])
         skill_facts = [f for f in profile.facts if f.kind == "skill"]
         experience_facts = [f for f in profile.facts if f.kind == "experience"]
-        years = {int(f.claim) for f in experience_facts}
+        years = {f.years for f in experience_facts}
         meta = {**meta, "skills": ",".join(f.claim for f in skill_facts),
                 "experience_years": next(iter(years)) if len(years) == 1 else None}
         eligibility, assessments = assess_eligibility(meta, requirements)

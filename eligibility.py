@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import re
+
 from domain_models import (
     AssessmentStatus,
     CriterionAssessment,
     CriterionKind,
     EligibilityStatus,
     RequirementSet,
+    term_in_excerpt,
 )
+
+
+def skill_requirement_in_text(label: str, text: str) -> bool:
+    """Match a required skill label against resume skill text without Java/JavaScript false positives."""
+    if term_in_excerpt(label, text):
+        return True
+    if label.strip().lower() == "react":
+        return re.search(r"\breact(?:\.js|js)\b", text, re.I) is not None
+    return False
 
 
 def assess_eligibility(
@@ -50,7 +62,7 @@ def assess_eligibility(
             )
 
     meta_skills_str = resume_metadata.get("skills") or ""
-    meta_skills = [x.strip().lower() for x in meta_skills_str.split(",") if x.strip()]
+    meta_skill_tokens = [x.strip() for x in meta_skills_str.split(",") if x.strip()]
 
     for crit in requirements.must_have:
         if crit.kind == CriterionKind.EXPERIENCE:
@@ -58,9 +70,23 @@ def assess_eligibility(
         label = crit.label.lower()
         if not label:
             continue
-        if label in meta_skills:
+        matched_token = next(
+            (tok for tok in meta_skill_tokens if skill_requirement_in_text(label, tok)),
+            None,
+        )
+        if matched_token is None and meta_skills_str:
+            matched_token = (
+                meta_skills_str
+                if skill_requirement_in_text(label, meta_skills_str)
+                else None
+            )
+        if matched_token is not None:
             assessments.append(
-                CriterionAssessment(criterion_id=crit.id, status=AssessmentStatus.MET, evidence_excerpt=crit.label)
+                CriterionAssessment(
+                    criterion_id=crit.id,
+                    status=AssessmentStatus.MET,
+                    evidence_excerpt=matched_token[:120],
+                )
             )
         elif not meta_skills_str:
             assessments.append(

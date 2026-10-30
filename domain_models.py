@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Literal
@@ -56,8 +57,15 @@ class ExtractionStatus(str, Enum):
 
 
 class CandidateFact(BaseModel):
-    kind: Literal["skill", "experience", "other"]
+    kind: Literal["skill", "other"]
     claim: str
+    excerpt: str
+    page: int = Field(..., ge=1)
+
+
+class ExperienceFact(BaseModel):
+    kind: Literal["experience"]
+    years: int = Field(..., ge=0, strict=True)
     excerpt: str
     page: int = Field(..., ge=1)
 
@@ -66,7 +74,7 @@ class CandidateProfile(BaseModel):
     candidate_id: str
     source_path: str = Field(..., description="Corpus-relative resume path")
     content_hash: str
-    facts: list[CandidateFact] = Field(default_factory=list)
+    facts: list[CandidateFact | ExperienceFact] = Field(default_factory=list)
     extraction_status: ExtractionStatus = ExtractionStatus.PENDING
     failure_reason: Optional[str] = None
 
@@ -127,12 +135,32 @@ def format_excerpt_for_display(text: str, max_len: int = 280) -> str:
     return cleaned
 
 
+def _citation_text(text: str) -> str:
+    """Canonical text for citation checks: NFKC, mojibake repaired, casefolded."""
+    return repair_common_mojibake(unicodedata.normalize("NFKC", text)).casefold()
+
+
 def excerpt_in_source(excerpt: str, source_text: str) -> bool:
-    if not excerpt.strip():
+    """True when the excerpt occurs in the source as whole tokens, ignoring whitespace.
+
+    PDF text extraction inserts line breaks and spaces inside phrases
+    (``"First Aid training (\\n 2016\\n )"``), so whitespace may differ anywhere.
+    Every other character must match, and the match may not start or end inside
+    a word (``"React"`` does not match ``"Reactive"``).
+    """
+    chars = re.sub(r"\s+", "", _citation_text(excerpt))
+    if not chars:
         return False
-    norm_excerpt = normalize_whitespace(excerpt).lower()
-    norm_source = normalize_whitespace(source_text).lower()
-    return norm_excerpt in norm_source
+    body = r"\s*".join(re.escape(c) for c in chars)
+    start = r"(?<!\w)" if re.match(r"\w", chars[0]) else ""
+    end = r"(?!\w)" if re.match(r"\w", chars[-1]) else ""
+    return re.search(start + body + end, _citation_text(source_text)) is not None
+
+
+def term_in_excerpt(term: str, excerpt: str) -> bool:
+    """True when ``term`` occurs in ``excerpt`` as a whole token sequence."""
+    pattern = rf"(?<!\w){re.escape(normalize_whitespace(_citation_text(term)))}(?!\w)"
+    return re.search(pattern, normalize_whitespace(_citation_text(excerpt))) is not None
 
 
 def content_hash(text: str) -> str:

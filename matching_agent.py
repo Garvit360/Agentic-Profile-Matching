@@ -2,18 +2,10 @@ import logging
 import os
 import re
 import sys
-import warnings
 from typing import Optional
-
-warnings.filterwarnings(
-    "ignore",
-    message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
-    category=UserWarning,
-)
 
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
-from langchain_core._api.deprecation import LangChainDeprecationWarning
 
 from agent_tools import (
     CandidateShortlistItem,
@@ -36,6 +28,7 @@ from domain_models import (
 )
 from eligibility import combined_score, recommendation_from_scores
 from requirements_engine import apply_refinement
+from job_matcher import IndexRebuildRequired
 
 
 class Message(BaseModel):
@@ -438,7 +431,12 @@ def extract_requirements_node(state: dict) -> dict:
         }
 
     intent = st.last_user_intent or ""
-    spec = extract_requirements(st.job_description)
+    cleared = {
+        "candidate_pool": [],
+        "pending_pool": [],
+        "shortlist": [],
+        "pending_review": [],
+    }
 
     if intent == "refine" and st.requirements and (st.last_user_message or "").strip():
         refinement = apply_refinement(st.requirements, st.last_user_message or "")
@@ -448,14 +446,15 @@ def extract_requirements_node(state: dict) -> dict:
                 "request_status": RequestStatus.FAILED,
             }
         if refinement.applied:
-            requirements = refinement.requirements
-        else:
-            requirements = requirements_from_jd(st.job_description, spec)
-    else:
-        requirements = requirements_from_jd(st.job_description, spec)
+            return {
+                "requirements": refinement.requirements,
+                "requirements_spec": st.requirements_spec,
+                **cleared,
+            }
 
-    return {"requirements": requirements, "requirements_spec": spec,
-            "candidate_pool": [], "pending_pool": [], "shortlist": [], "pending_review": []}
+    spec = extract_requirements(st.job_description)
+    requirements = requirements_from_jd(st.job_description, spec)
+    return {"requirements": requirements, "requirements_spec": spec, **cleared}
 
 
 def search_resumes_node(state: dict) -> dict:
@@ -722,7 +721,7 @@ def search_files_node(state: dict) -> dict:
 
     st = AgentState.model_validate(state)
     msg = st.last_user_message or ""
-    query = re.sub(r".*\b(file|filename|resume name)\b", "", msg, flags=re.I).strip(" :")
+    query = re.sub(r".*\b(file|filename|resume name)\b", "", msg, flags=re.I).strip(" :").rstrip(".")
     if not query:
         query = msg
     try:
@@ -984,12 +983,6 @@ def configure_cli_output() -> None:
         "chromadb",
     ]:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
-    warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
-    warnings.filterwarnings(
-        "ignore",
-        message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
-        category=UserWarning,
-    )
 
 
 def prettify_node_name(node_name: str) -> str:
@@ -1039,6 +1032,13 @@ def invoke_with_node_trace(graph, state: AgentState, user_msg: str) -> AgentStat
                     last_status = status
                 merged.update(updates)
         show_live_status("Done.", final=True)
+    except IndexRebuildRequired as exc:
+        merged["last_response"] = str(exc)
+        merged["request_status"] = RequestStatus.FAILED
+        history = list(merged["conversation_history"])
+        history.append(Message(role="assistant", content=str(exc)))
+        merged["conversation_history"] = history
+        show_live_status("Resume index requires rebuilding.", final=True)
     except Exception as exc:
         logger = logging.getLogger(__name__)
         logger.exception("Graph invocation failed: %s", exc)

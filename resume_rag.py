@@ -12,10 +12,11 @@ from typing import Optional
 import re
 
 from pydantic import BaseModel, Field
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_core.documents import Document
+from corpus_tools import list_corpus_files, read_resume_pdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+import chromadb
 
 from corpus_tools import corpus_relative_path, resolve_corpus_root
 from embedding_utils import CHROMA_COLLECTION_NAME, CHROMA_PERSIST_DIR, require_openai_key
@@ -124,12 +125,12 @@ def run_resume_rag(
         raise NotADirectoryError(f"Not a directory: {resumes_dir}")
 
     logger.info("Loading PDFs from %s ...", resumes_dir)
-    loader = DirectoryLoader(
-        str(resumes_dir),
-        glob="**/*.pdf",
-        loader_cls=PyPDFLoader,
-    )
-    documents = loader.load()
+    documents = []
+    for info in list_corpus_files(resumes_dir):
+        pdf = read_resume_pdf(info.relative_path, resumes_dir)
+        documents.extend(Document(page_content=page.text, metadata={
+            "source": str(resumes_dir / info.relative_path), "page": page.page_number - 1,
+        }) for page in pdf.pages)
     if not documents:
         logger.error(
             "No PDF files found in %s\n"
@@ -186,32 +187,16 @@ def run_resume_rag(
         chunk_ids.append(chunk_id)
 
     embedding = OpenAIEmbeddings(model="text-embedding-3-small")
-    persist_path = Path(vector_db_path)
-    if persist_path.exists() and list(persist_path.iterdir()):
-        store = Chroma(
-            persist_directory=vector_db_path,
-            embedding_function=embedding,
-            collection_name=CHROMA_COLLECTION_NAME,
-        )
-        collection = store._collection
-        existing = collection.get(include=["metadatas"])
-        stale_ids: list[str] = []
-        for doc_id, meta in zip(existing.get("ids", []), existing.get("metadatas", [])):
-            path = (meta or {}).get("path") or ""
-            if doc_id not in set(chunk_ids):
-                stale_ids.append(doc_id)
-        store.add_documents(chunks, ids=chunk_ids)
-        if stale_ids:
-            collection.delete(ids=stale_ids)
-            logger.info("Removed %d stale chunks for re-indexed sources.", len(stale_ids))
-    else:
-        Chroma.from_documents(
-            chunks,
-            embedding,
-            persist_directory=vector_db_path,
-            collection_name=CHROMA_COLLECTION_NAME,
-            ids=chunk_ids,
-        )
+    collection = chromadb.PersistentClient(path=vector_db_path).get_or_create_collection(CHROMA_COLLECTION_NAME)
+    existing_ids = collection.get(include=[])["ids"]
+    # Complete all provider calls before modifying the index.
+    texts = [chunk.page_content for chunk in chunks]
+    vectors = embedding.embed_documents(texts)
+    collection.upsert(ids=chunk_ids, documents=texts, embeddings=vectors,
+                      metadatas=[chunk.metadata for chunk in chunks])
+    obsolete = sorted(set(existing_ids) - set(chunk_ids))
+    if obsolete:
+        collection.delete(ids=obsolete)
 
     success_profiles = len(file_metadata)
     logger.info(
