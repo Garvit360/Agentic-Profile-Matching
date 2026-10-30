@@ -81,3 +81,9 @@ npx -y @mermaid-js/mermaid-cli -i docs/state_machine.mmd -o docs/state_machine.s
 - **Missing vector DB:** run `python resume_rag.py Resume`
 - **Stale results in session:** run a fresh search; failed requests keep the last successful snapshot (`show previous results`)
 - **API errors:** check `.env` and retry; incomplete deep analysis receives no final hire decision
+
+## Evidence index migration
+
+Indexes created before structured profiles were integrated must be rebuilt with `python resume_rag.py Resume`. Ingestion extracts and caches page-cited facts using the model; this incurs API usage on uncached resumes. Invalid extraction stops ingestion explicitly. Replacement chunks are written before obsolete chunks are deleted. Search requires the profile metadata and does not substitute regex estimates when it is missing.
+
+Run all offline regression tests with `python -m pytest -q`. Live provider validation and the submission video remain separate release checks.
