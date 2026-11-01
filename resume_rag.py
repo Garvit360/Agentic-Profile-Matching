@@ -1,0 +1,224 @@
+"""
+Part A: RAG System Setup (LangChain).
+Load resumes via DirectoryLoader + PyPDFLoader, chunk with RecursiveCharacterTextSplitter,
+extract metadata per file, store in Chroma via LangChain.
+"""
+
+import hashlib
+import json
+import logging
+from pathlib import Path
+from typing import Optional
+import re
+
+from pydantic import BaseModel, Field
+from langchain_core.documents import Document
+from corpus_tools import list_corpus_files, read_resume_pdf
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+import chromadb
+
+from corpus_tools import corpus_relative_path, resolve_corpus_root
+from embedding_utils import CHROMA_COLLECTION_NAME, CHROMA_PERSIST_DIR, require_openai_key
+
+logger = logging.getLogger(__name__)
+
+
+SECTION_HEADERS = re.compile(
+    r"^(?:Education|Experience|Work\s*Experience|Skills|Summary|Projects|Certifications|Contact)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+class ResumeMetadata(BaseModel):
+    """Structured metadata extracted from a resume."""
+
+    name: str = Field(..., description="Candidate full name")
+    skills: list[str] = Field(default_factory=list, description="List of skills")
+    experience_years: Optional[int] = Field(None, description="Years of experience if parseable")
+    education: Optional[str] = Field(None, description="Education summary")
+
+
+def extract_metadata(text: str) -> ResumeMetadata:
+    """Parse name, skills, experience_years, education from full resume text."""
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    name = ""
+    skills: list[str] = []
+    experience_years: Optional[int] = None
+    education: Optional[str] = None
+
+    for i, line in enumerate(lines):
+        if re.match(r"^(?:name|full\s*name)\s*[:.]?\s*", line, re.I):
+            name = re.sub(r"^(?:name|full\s*name)\s*[:.]?\s*", "", line, flags=re.I).strip()
+            break
+        if i == 0 and len(line) < 80 and not line.lower().startswith(
+            ("summary", "objective", "education", "experience")
+        ):
+            name = line
+            break
+    if not name:
+        name = "Unknown"
+
+    in_skills = False
+    for line in lines:
+        if re.match(r"^skills\s*$", line, re.I):
+            in_skills = True
+            continue
+        if in_skills:
+            if SECTION_HEADERS.match(line) and not line.lower().startswith("skill"):
+                break
+            for part in re.split(r"[,;]|\s+-\s+", line):
+                part = part.strip().strip("•-")
+                if part and len(part) < 80:
+                    skills.append(part)
+        if re.match(r"^(?:experience|work)\s*$", line, re.I):
+            in_skills = False
+
+    years_match = re.search(r"(\d+)\s*\+\s*years?", text, re.I) or re.search(
+        r"(\d+)\s*years?\s+(?:of\s+)?(?:experience|exp\.?)", text, re.I
+    )
+    if years_match:
+        experience_years = int(years_match.group(1))
+
+    in_edu = False
+    edu_parts: list[str] = []
+    for line in lines:
+        if re.match(r"^education\s*$", line, re.I):
+            in_edu = True
+            continue
+        if in_edu:
+            if SECTION_HEADERS.match(line) and not line.lower().startswith("edu"):
+                break
+            edu_parts.append(line)
+        if re.match(r"^(?:experience|work|skills)\s*$", line, re.I):
+            in_edu = False
+    if edu_parts:
+        education = " ".join(edu_parts[:5]).strip()
+
+    return ResumeMetadata(
+        name=name,
+        skills=skills[:50],
+        experience_years=experience_years,
+        education=education or None,
+    )
+
+
+def run_resume_rag(
+    resumes_dir: Path | str,
+    vector_db_path: str = CHROMA_PERSIST_DIR,
+) -> None:
+    """Load PDFs, chunk, enrich metadata, embed and store in Chroma via LangChain."""
+    require_openai_key()
+    resumes_dir = Path(resumes_dir).resolve()
+
+    if not resumes_dir.exists():
+        logger.error(
+            "Resumes directory does not exist: %s\n"
+            "  → Create a folder (e.g. 'Resume') and add PDF resumes.\n"
+            "  → Or pass a path: python resume_rag.py /path/to/your/resumes",
+            resumes_dir,
+        )
+        raise FileNotFoundError(f"Resumes directory not found: {resumes_dir}")
+
+    if not resumes_dir.is_dir():
+        logger.error("%s exists but is not a directory.", resumes_dir)
+        raise NotADirectoryError(f"Not a directory: {resumes_dir}")
+
+    logger.info("Loading PDFs from %s ...", resumes_dir)
+    documents = []
+    for info in list_corpus_files(resumes_dir):
+        pdf = read_resume_pdf(info.relative_path, resumes_dir)
+        documents.extend(Document(page_content=page.text, metadata={
+            "source": str(resumes_dir / info.relative_path), "page": page.page_number - 1,
+        }) for page in pdf.pages)
+    if not documents:
+        logger.error(
+            "No PDF files found in %s\n"
+            "  → Add one or more .pdf resume files to that folder and run again.",
+            resumes_dir,
+        )
+        raise ValueError(f"No PDF resumes found in {resumes_dir}")
+
+    n_files = len({d.metadata.get("source") for d in documents})
+    logger.info("Found %d PDF(s), %d page(s). Chunking and extracting metadata ...", n_files, len(documents))
+
+    by_source: dict[str, list] = {}
+    for doc in documents:
+        source = doc.metadata.get("source", "unknown")
+        by_source.setdefault(source, []).append(doc)
+    from profile_extraction import extract_profile
+    from domain_models import ExtractionStatus
+    corpus_root = resolve_corpus_root(resumes_dir)
+    profiles = {}
+    file_metadata: dict[str, ResumeMetadata] = {}
+    for source, docs in by_source.items():
+        full_text = "\n".join(d.page_content for d in docs)
+        rel = corpus_relative_path(source, corpus_root)
+        profile = extract_profile(rel, corpus_root)
+        if profile.extraction_status != ExtractionStatus.SUCCESS:
+            raise ValueError(f"Cannot index {rel}: {profile.failure_reason}")
+        profiles[source] = profile
+        file_metadata[source] = extract_metadata(full_text)
+
+    corpus_root = resolve_corpus_root(resumes_dir)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=50)
+    chunks = splitter.split_documents(documents)
+    logger.info("Created %d chunks. Embedding and storing in Chroma ...", len(chunks))
+
+    chunk_ids: list[str] = []
+    sources_indexed: set[str] = set()
+    for idx, chunk in enumerate(chunks):
+        source = chunk.metadata.get("source", "")
+        rel = corpus_relative_path(source, corpus_root) if source else source
+        sources_indexed.add(rel)
+        if source in file_metadata:
+            m = file_metadata[source]
+            chunk.metadata["profile"] = profiles[source].model_dump_json()
+            chunk.metadata["path"] = rel
+            chunk.metadata["name"] = m.name
+            chunk.metadata["skills"] = ",".join(m.skills) if m.skills else ""
+            chunk.metadata["experience_years"] = (
+                m.experience_years if m.experience_years is not None else -1
+            )
+            chunk.metadata["education"] = m.education or ""
+        digest = hashlib.sha256(f"{rel}:{idx}:{chunk.page_content[:120]}".encode()).hexdigest()[:16]
+        chunk_id = f"{rel}#chunk-{digest}"
+        chunk.metadata["chunk_id"] = chunk_id
+        chunk_ids.append(chunk_id)
+
+    embedding = OpenAIEmbeddings(model="text-embedding-3-small")
+    collection = chromadb.PersistentClient(path=vector_db_path).get_or_create_collection(CHROMA_COLLECTION_NAME)
+    existing_ids = collection.get(include=[])["ids"]
+    # Complete all provider calls before modifying the index.
+    texts = [chunk.page_content for chunk in chunks]
+    vectors = embedding.embed_documents(texts)
+    collection.upsert(ids=chunk_ids, documents=texts, embeddings=vectors,
+                      metadatas=[chunk.metadata for chunk in chunks])
+    obsolete = sorted(set(existing_ids) - set(chunk_ids))
+    if obsolete:
+        collection.delete(ids=obsolete)
+
+    success_profiles = len(file_metadata)
+    logger.info(
+        "Done. Discovered %d PDF(s), indexed %d chunks (%d sources). "
+        "You can now run: python job_matcher.py \"your job description\"",
+        n_files,
+        len(chunks),
+        len(sources_indexed),
+    )
+    logger.info("Successful metadata profiles: %d", success_profiles)
+
+
+if __name__ == "__main__":
+    import sys
+    from embedding_utils import PROJECT_ROOT
+
+    resumes_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else PROJECT_ROOT / "Resume"
+    try:
+        run_resume_rag(resumes_dir)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+        logger.error("%s", e)
+        sys.exit(1)
+    except RuntimeError as e:
+        logger.error("%s", e)
+        sys.exit(1)
